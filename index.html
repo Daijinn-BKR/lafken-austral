@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lafken Austral · Servicios</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<style>
+  :root { --bg:#f4f6f5; --card:#fff; --ink:#1d2a26; --muted:#6b7a75; --brand:#1f7a5a; --line:#dde4e1; --danger:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  header h1 { font-size:18px; margin:0; }
+  #quien { font-size:13px; opacity:.9; margin-right:8px; }
+  nav { display:flex; gap:4px; padding:8px 12px; background:#fff; border-bottom:1px solid var(--line); overflow-x:auto; }
+  nav button { border:0; background:none; padding:8px 14px; border-radius:8px; font-size:15px; cursor:pointer; color:var(--muted); white-space:nowrap; }
+  nav button.on { background:var(--brand); color:#fff; }
+  main { max-width:820px; margin:0 auto; padding:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input, select, textarea { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:16px; font-family:inherit; background:#fff; }
+  textarea { min-height:90px; }
+  .checks { display:flex; flex-wrap:wrap; gap:8px; }
+  .checks label { display:flex; align-items:center; gap:6px; margin:0; padding:8px 12px; border:1px solid var(--line); border-radius:20px; color:var(--ink); font-size:15px; cursor:pointer; }
+  .checks input { width:auto; }
+  button.btn { background:var(--brand); color:#fff; border:0; padding:11px 18px; border-radius:8px; font-size:16px; cursor:pointer; }
+  button.sec { background:#e8eeeb; color:var(--ink); }
+  header button.sec { padding:8px 14px; font-size:14px; }
+  button.del { background:none; color:var(--danger); border:0; cursor:pointer; font-size:14px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; min-width:140px; }
+  .tag { display:inline-block; background:#e3f1ec; color:var(--brand); border-radius:12px; padding:2px 10px; font-size:13px; margin:2px 4px 2px 0; }
+  .tag.INSERT { background:#e3f1ec; color:var(--brand); }
+  .tag.UPDATE { background:#fff3d6; color:#8a5a00; }
+  .tag.DELETE { background:#fbe3e1; color:var(--danger); }
+  .muted { color:var(--muted); font-size:14px; }
+  .item-head { display:flex; justify-content:space-between; gap:8px; align-items:start; }
+  .err { color:var(--danger); font-size:14px; margin-top:8px; }
+  .hidden { display:none; }
+  .login { max-width:360px; margin:60px auto; }
+  .diff { font-size:14px; margin:4px 0 0; padding-left:18px; }
+  .diff s { color:var(--danger); } .diff b { color:var(--brand); font-weight:600; }
+</style>
+</head>
+<body>
+
+<div id="login" class="card login hidden">
+  <h2 style="margin-top:0">Lafken Austral</h2>
+  <label>Correo</label><input id="lEmail" type="email" autocomplete="username">
+  <label>Contraseña</label><input id="lPass" type="password" autocomplete="current-password">
+  <div id="lErr" class="err"></div>
+  <p><button class="btn" id="lBtn">Entrar</button></p>
+</div>
+
+<div id="app" class="hidden">
+  <header><h1>Lafken Austral</h1><div class="row"><span id="quien"></span><button class="btn sec" id="salir">Salir</button></div></header>
+  <nav>
+    <button data-tab="nuevo" class="on">Nuevo servicio</button>
+    <button data-tab="historial">Servicios</button>
+    <button data-tab="clientes">Clientes</button>
+    <button data-tab="operarios">Operarios</button>
+    <button data-tab="auditoria" data-admin class="hidden">Historial de cambios</button>
+    <button data-tab="usuarios" data-admin class="hidden">Usuarios</button>
+  </nav>
+  <main>
+    <section id="tab-nuevo"></section>
+    <section id="tab-historial" class="hidden"></section>
+    <section id="tab-clientes" class="hidden"></section>
+    <section id="tab-operarios" class="hidden"></section>
+    <section id="tab-auditoria" class="hidden"></section>
+    <section id="tab-usuarios" class="hidden"></section>
+  </main>
+</div>
+
+<script>
+const TIPOS = ["Desratización","Desinfección","Desinsectación","Otros"];
+const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hoy = () => new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+const fmtFecha = f => f.split("-").reverse().join("/");
+const fmtHora = f => new Date(f).toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
+
+let clientes = [], operarios = [], editId = null, opsOriginal = [];
+let miPerfil = null, esAdmin = false;
+
+// ---------- sesión ----------
+async function init() {
+  const { data } = await sb.auth.getSession();
+  data.session ? entrar() : $("#login").classList.remove("hidden");
+}
+$("#lBtn").onclick = async () => {
+  const { error } = await sb.auth.signInWithPassword({ email: $("#lEmail").value.trim(), password: $("#lPass").value });
+  if (error) { $("#lErr").textContent = "Correo o contraseña incorrectos"; return; }
+  $("#login").classList.add("hidden"); entrar();
+};
+$("#salir").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+async function entrar() {
+  const { data: { user } } = await sb.auth.getUser();
+  const { data: perfil } = await sb.from("perfiles").select("*").eq("id", user.id).maybeSingle();
+  if (!perfil) {
+    await sb.auth.signOut();
+    $("#login").classList.remove("hidden");
+    $("#lErr").textContent = "Tu usuario no tiene perfil. Pide al administrador que revise tu cuenta.";
+    return;
+  }
+  miPerfil = perfil; esAdmin = perfil.rol === "admin";
+  $("#quien").textContent = `${perfil.email} · ${esAdmin ? "Administrador" : "Operario"}`;
+  document.querySelectorAll("nav [data-admin]").forEach(b => b.classList.toggle("hidden", !esAdmin));
+  $("#app").classList.remove("hidden");
+  await cargarBase();
+  pintarNuevo();
+}
+async function cargarBase() {
+  const [c, o] = await Promise.all([
+    sb.from("clientes").select("*").order("nombre"),
+    sb.from("operarios").select("*").order("nombre")
+  ]);
+  clientes = c.data || []; operarios = o.data || [];
+}
+
+// ---------- tabs ----------
+const PINTORES = () => ({ nuevo: pintarNuevo, historial: pintarHistorial, clientes: pintarClientes, operarios: pintarOperarios, auditoria: pintarAuditoria, usuarios: pintarUsuarios });
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
+  $("#tab-" + b.dataset.tab).classList.remove("hidden");
+  PINTORES()[b.dataset.tab]();
+});
+function irA(tab) { document.querySelector(`nav button[data-tab="${tab}"]`).click(); }
+
+// ---------- nuevo / editar servicio ----------
+async function pintarNuevo(srv) {
+  const s = srv || { cliente_id: "", fecha: hoy(), tipos: [], otros_detalle: "", observaciones: "", ops: [] };
+  editId = srv ? srv.id : null;
+  opsOriginal = srv ? [...srv.ops] : [];
+  const activos = operarios.filter(o => o.activo || s.ops.includes(o.id));
+  $("#tab-nuevo").innerHTML = `
+  <div class="card">
+    <h3 style="margin-top:0">${editId ? "Editar servicio" : "Nuevo servicio"}</h3>
+    <label>Cliente</label>
+    <select id="fCliente"><option value="">— Selecciona —</option>
+      ${clientes.map(c => `<option value="${c.id}" ${c.id===s.cliente_id?"selected":""}>${esc(c.nombre)}</option>`).join("")}
+    </select>
+    ${clientes.length ? "" : `<p class="muted">Primero agrega clientes en la pestaña Clientes.</p>`}
+    <label>Fecha</label><input id="fFecha" type="date" value="${s.fecha}">
+    <label>Operarios</label>
+    <div class="checks" id="fOps">
+      ${activos.map(o => `<label><input type="checkbox" value="${o.id}" ${s.ops.includes(o.id)?"checked":""}>${esc(o.nombre)}</label>`).join("") || `<span class="muted">Agrega operarios en la pestaña Operarios.</span>`}
+    </div>
+    <label>Tipo de servicio</label>
+    <div class="checks" id="fTipos">
+      ${TIPOS.map(t => `<label><input type="checkbox" value="${t}" ${s.tipos.includes(t)?"checked":""}>${t}</label>`).join("")}
+    </div>
+    <div id="otrosBox" class="${s.tipos.includes("Otros")?"":"hidden"}">
+      <label>Especifica "Otros"</label><input id="fOtros" value="${esc(s.otros_detalle)}">
+    </div>
+    <label>Observaciones</label><textarea id="fObs">${esc(s.observaciones)}</textarea>
+    <div id="fErr" class="err"></div>
+    <p class="row"><button class="btn" id="fGuardar">${editId ? "Guardar cambios" : "Guardar servicio"}</button>
+    ${editId ? `<button class="btn sec" id="fCancel">Cancelar</button>` : ""}</p>
+  </div>`;
+  $("#fTipos").onchange = () => {
+    const otros = [...document.querySelectorAll("#fTipos input:checked")].some(i => i.value === "Otros");
+    $("#otrosBox").classList.toggle("hidden", !otros);
+  };
+  if (editId) $("#fCancel").onclick = () => { editId = null; irA("historial"); };
+  $("#fGuardar").onclick = guardarServicio;
+}
+
+async function guardarServicio() {
+  const cliente_id = $("#fCliente").value, fecha = $("#fFecha").value;
+  const tipos = [...document.querySelectorAll("#fTipos input:checked")].map(i => i.value);
+  const ops = [...document.querySelectorAll("#fOps input:checked")].map(i => i.value);
+  const err = m => $("#fErr").textContent = m;
+  if (!cliente_id) return err("Selecciona un cliente");
+  if (!fecha) return err("Indica la fecha");
+  if (!ops.length) return err("Selecciona al menos un operario");
+  if (!tipos.length) return err("Selecciona al menos un tipo de servicio");
+  const otros = tipos.includes("Otros") ? $("#fOtros").value.trim() : null;
+  if (tipos.includes("Otros") && !otros) return err('Especifica qué es "Otros"');
+  const fila = { cliente_id, fecha, tipos, otros_detalle: otros, observaciones: $("#fObs").value.trim() || null };
+
+  let id = editId, r;
+  if (id) r = await sb.from("servicios").update(fila).eq("id", id);
+  else { r = await sb.from("servicios").insert(fila).select("id").single(); id = r.data?.id; }
+  if (r.error) return err("Error al guardar: " + r.error.message);
+
+  // Solo se tocan los operarios que cambiaron (así el historial de cambios queda limpio)
+  const orig = editId ? opsOriginal : [];
+  const quitar = orig.filter(x => !ops.includes(x)), agregar = ops.filter(x => !orig.includes(x));
+  if (quitar.length) {
+    const d = await sb.from("servicio_operarios").delete().eq("servicio_id", id).in("operario_id", quitar);
+    if (d.error) return err("Error al quitar operarios: " + d.error.message);
+  }
+  if (agregar.length) {
+    const i = await sb.from("servicio_operarios").insert(agregar.map(operario_id => ({ servicio_id: id, operario_id })));
+    if (i.error) return err("Error al guardar operarios: " + i.error.message);
+  }
+  editId = null; irA("historial");
+}
+
+// ---------- servicios registrados ----------
+async function pintarHistorial() {
+  const el = $("#tab-historial");
+  el.innerHTML = `
+  <div class="card row">
+    <div class="grow"><label>Cliente</label><select id="hCli"><option value="">Todos</option>${clientes.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join("")}</select></div>
+    <div class="grow"><label>Servicio</label><select id="hTipo"><option value="">Todos</option>${TIPOS.map(t=>`<option>${t}</option>`).join("")}</select></div>
+    <div class="grow"><label>Desde</label><input type="date" id="hDesde"></div>
+    <div class="grow"><label>Hasta</label><input type="date" id="hHasta"></div>
+  </div>
+  <div id="hLista" class="muted">Cargando…</div>`;
+  ["hCli","hTipo","hDesde","hHasta"].forEach(i => $("#"+i).onchange = cargarLista);
+  cargarLista();
+}
+async function cargarLista() {
+  let q = sb.from("servicios").select("*, clientes(nombre), servicio_operarios(operario_id, operarios(nombre))")
+    .order("fecha", { ascending: false }).order("created_at", { ascending: false }).limit(200);
+  if ($("#hCli").value) q = q.eq("cliente_id", $("#hCli").value);
+  if ($("#hTipo").value) q = q.contains("tipos", [$("#hTipo").value]);
+  if ($("#hDesde").value) q = q.gte("fecha", $("#hDesde").value);
+  if ($("#hHasta").value) q = q.lte("fecha", $("#hHasta").value);
+  const { data, error } = await q;
+  const box = $("#hLista");
+  if (error) return box.innerHTML = `<div class="err">${esc(error.message)}</div>`;
+  if (!data.length) return box.innerHTML = `<p class="muted">Sin servicios registrados.</p>`;
+  box.innerHTML = data.map(s => `
+    <div class="card">
+      <div class="item-head">
+        <div><strong>${esc(s.clientes?.nombre)}</strong><div class="muted">${fmtFecha(s.fecha)}</div></div>
+        <div><button class="del" data-ed="${s.id}" style="color:var(--brand)">Editar</button>${esAdmin ? `<button class="del" data-del="${s.id}">Eliminar</button>` : ""}</div>
+      </div>
+      <div>${s.tipos.map(t => `<span class="tag">${t === "Otros" && s.otros_detalle ? "Otros: " + esc(s.otros_detalle) : t}</span>`).join("")}</div>
+      <div class="muted">Operarios: ${s.servicio_operarios.map(x => esc(x.operarios?.nombre)).join(", ") || "—"}</div>
+      ${s.observaciones ? `<p style="margin:8px 0 0">${esc(s.observaciones)}</p>` : ""}
+    </div>`).join("");
+  box.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("¿Eliminar este servicio?")) return;
+    const { error } = await sb.from("servicios").delete().eq("id", b.dataset.del);
+    if (error) alert("No se pudo eliminar: " + error.message);
+    cargarLista();
+  });
+  box.querySelectorAll("[data-ed]").forEach(b => b.onclick = () => {
+    const s = data.find(x => x.id === b.dataset.ed);
+    document.querySelectorAll("main section").forEach(x => x.classList.add("hidden"));
+    $("#tab-nuevo").classList.remove("hidden");
+    document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x.dataset.tab === "nuevo"));
+    pintarNuevo({ ...s, ops: s.servicio_operarios.map(x => x.operario_id) });
+  });
+}
+
+// ---------- clientes ----------
+async function pintarClientes() {
+  await cargarBase();
+  $("#tab-clientes").innerHTML = `
+  ${esAdmin ? `<div class="card"><div class="row"><input class="grow" id="nCli" placeholder="Nombre del cliente"><button class="btn" id="aCli">Agregar</button></div><div id="cErr" class="err"></div></div>` : ""}
+  ${clientes.map(c => `<div class="card item-head"><span>${esc(c.nombre)}</span>
+    <span>${esAdmin ? `<button class="del" style="color:var(--brand)" data-ren="${c.id}">Renombrar</button><button class="del" data-id="${c.id}">Eliminar</button>` : ""}</span></div>`).join("") || `<p class="muted">Aún no hay clientes.</p>`}`;
+  if (esAdmin) $("#aCli").onclick = async () => {
+    const nombre = $("#nCli").value.trim(); if (!nombre) return;
+    const { error } = await sb.from("clientes").insert({ nombre });
+    if (error) return $("#cErr").textContent = error.code === "23505" ? "Ese cliente ya existe" : error.message;
+    pintarClientes();
+  };
+  $("#tab-clientes").querySelectorAll("[data-ren]").forEach(b => b.onclick = async () => {
+    const c = clientes.find(x => x.id === b.dataset.ren);
+    const nombre = prompt("Nuevo nombre del cliente:", c.nombre)?.trim();
+    if (!nombre || nombre === c.nombre) return;
+    const { error } = await sb.from("clientes").update({ nombre }).eq("id", c.id);
+    if (error) return alert(error.code === "23505" ? "Ese cliente ya existe" : error.message);
+    pintarClientes();
+  });
+  $("#tab-clientes").querySelectorAll("[data-id]").forEach(b => b.onclick = async () => {
+    if (!confirm("¿Eliminar cliente?")) return;
+    const { error } = await sb.from("clientes").delete().eq("id", b.dataset.id);
+    if (error) return alert("No se puede eliminar: tiene servicios registrados.");
+    pintarClientes();
+  });
+}
+
+// ---------- operarios ----------
+async function pintarOperarios() {
+  await cargarBase();
+  $("#tab-operarios").innerHTML = `
+  ${esAdmin ? `<div class="card"><div class="row"><input class="grow" id="nOp" placeholder="Nombre del operario"><button class="btn" id="aOp">Agregar</button></div><div id="oErr" class="err"></div></div>` : ""}
+  ${operarios.map(o => `<div class="card item-head"><span>${esc(o.nombre)} ${o.activo ? "" : '<span class="muted">(inactivo)</span>'}</span>
+    ${esAdmin ? `<button class="del" style="color:var(--brand)" data-tog="${o.id}">${o.activo ? "Desactivar" : "Activar"}</button>` : ""}</div>`).join("") || `<p class="muted">Aún no hay operarios.</p>`}`;
+  if (esAdmin) $("#aOp").onclick = async () => {
+    const nombre = $("#nOp").value.trim(); if (!nombre) return;
+    const { error } = await sb.from("operarios").insert({ nombre });
+    if (error) return $("#oErr").textContent = error.code === "23505" ? "Ese operario ya existe" : error.message;
+    pintarOperarios();
+  };
+  $("#tab-operarios").querySelectorAll("[data-tog]").forEach(b => b.onclick = async () => {
+    const o = operarios.find(x => x.id === b.dataset.tog);
+    await sb.from("operarios").update({ activo: !o.activo }).eq("id", o.id); pintarOperarios();
+  });
+}
+
+// ---------- historial de cambios (solo admin) ----------
+const TABLAS = { servicios: "Servicio", clientes: "Cliente", operarios: "Operario", servicio_operarios: "Operarios del servicio", perfiles: "Usuario" };
+const ACCIONES = { INSERT: "Creó", UPDATE: "Editó", DELETE: "Eliminó" };
+const CAMPOS = { cliente_id: "Cliente", fecha: "Fecha", tipos: "Tipos", otros_detalle: "Otros", observaciones: "Observaciones", nombre: "Nombre", activo: "Activo", rol: "Rol", email: "Correo" };
+
+function valor(campo, v) {
+  if (v === null || v === undefined || v === "") return "—";
+  if (campo === "cliente_id") return clientes.find(c => c.id === v)?.nombre ?? "(cliente eliminado)";
+  if (campo === "fecha") return fmtFecha(v);
+  if (campo === "tipos") return v.join(", ") || "—";
+  if (campo === "activo") return v ? "Sí" : "No";
+  return v;
+}
+function opNombre(id) { return operarios.find(o => o.id === id)?.nombre ?? "(operario eliminado)"; }
+
+function detalle(a) {
+  const d = a.despues || a.antes;
+  if (a.tabla === "servicio_operarios") {
+    const quien = esc(opNombre(d.operario_id));
+    return a.accion === "INSERT" ? `Agregó a <b>${quien}</b>` : `Quitó a <s>${quien}</s>`;
+  }
+  const titulo = {
+    servicios: () => `${esc(valor("cliente_id", d.cliente_id))} · ${fmtFecha(d.fecha)}`,
+    perfiles: () => esc(d.email),
+  }[a.tabla]?.() ?? esc(d.nombre);
+  if (a.accion !== "UPDATE") return titulo;
+  const cambios = Object.keys(a.despues).filter(k => k !== "created_at" && JSON.stringify(a.antes[k]) !== JSON.stringify(a.despues[k]));
+  return `${titulo}<ul class="diff">${cambios.map(k =>
+    `<li>${CAMPOS[k] ?? k}: <s>${esc(valor(k, a.antes[k]))}</s> → <b>${esc(valor(k, a.despues[k]))}</b></li>`).join("")}</ul>`;
+}
+
+async function pintarAuditoria() {
+  await cargarBase();
+  const { data: perfiles } = await sb.from("perfiles").select("id,email").order("email");
+  $("#tab-auditoria").innerHTML = `
+  <div class="card row">
+    <div class="grow"><label>Usuario</label><select id="aUsu"><option value="">Todos</option>${(perfiles||[]).map(p=>`<option value="${p.id}">${esc(p.email)}</option>`).join("")}</select></div>
+    <div class="grow"><label>Qué</label><select id="aTabla"><option value="">Todo</option>${Object.entries(TABLAS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></div>
+    <div class="grow"><label>Acción</label><select id="aAcc"><option value="">Todas</option>${Object.entries(ACCIONES).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></div>
+  </div>
+  <div id="aLista" class="muted">Cargando…</div>`;
+  ["aUsu","aTabla","aAcc"].forEach(i => $("#"+i).onchange = cargarAuditoria);
+  cargarAuditoria();
+}
+async function cargarAuditoria() {
+  let q = sb.from("auditoria").select("*").order("fecha", { ascending: false }).limit(300);
+  if ($("#aUsu").value) q = q.eq("usuario_id", $("#aUsu").value);
+  if ($("#aTabla").value) q = q.eq("tabla", $("#aTabla").value);
+  if ($("#aAcc").value) q = q.eq("accion", $("#aAcc").value);
+  const { data, error } = await q;
+  const box = $("#aLista");
+  if (error) return box.innerHTML = `<div class="err">${esc(error.message)}</div>`;
+  if (!data.length) return box.innerHTML = `<p class="muted">Sin cambios registrados.</p>`;
+  box.innerHTML = data.map(a => `
+    <div class="card">
+      <div class="item-head">
+        <div><span class="tag ${a.accion}">${ACCIONES[a.accion]}</span><strong>${TABLAS[a.tabla] ?? a.tabla}</strong></div>
+        <div class="muted">${fmtHora(a.fecha)}</div>
+      </div>
+      <div class="muted">por ${esc(a.usuario_email ?? "Sistema")}</div>
+      <div style="margin-top:6px">${detalle(a)}</div>
+    </div>`).join("");
+}
+
+// ---------- usuarios (solo admin) ----------
+async function pintarUsuarios() {
+  const { data, error } = await sb.from("perfiles").select("*").order("email");
+  if (error) return $("#tab-usuarios").innerHTML = `<div class="err">${esc(error.message)}</div>`;
+  $("#tab-usuarios").innerHTML = `
+  <div class="card muted">Los usuarios nuevos se crean en Supabase (Authentication &gt; Users) y aparecen aquí como Operario. Desde aquí puedes cambiar su rol.</div>
+  ${data.map(p => `<div class="card item-head"><span>${esc(p.email)}${p.id === miPerfil.id ? ' <span class="muted">(tú)</span>' : ""}</span>
+    <select data-id="${p.id}" style="width:auto" ${p.id === miPerfil.id ? "disabled" : ""}>
+      <option value="operario" ${p.rol==="operario"?"selected":""}>Operario</option>
+      <option value="admin" ${p.rol==="admin"?"selected":""}>Administrador</option>
+    </select></div>`).join("")}`;
+  $("#tab-usuarios").querySelectorAll("select[data-id]").forEach(s => s.onchange = async () => {
+    const { error } = await sb.from("perfiles").update({ rol: s.value }).eq("id", s.dataset.id);
+    if (error) alert("No se pudo cambiar el rol: " + error.message);
+    pintarUsuarios();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
